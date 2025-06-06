@@ -17,7 +17,7 @@ from flwr_datasets.partitioner import IidPartitioner
 from torch.utils.data import DataLoader
 from torchvision.transforms import Compose, Normalize, ToTensor
 
-DATA_PATH = Path("/mnt/c/Users/vinay/Downloads/mit-bih-arrhythmia-database-1.0.0/mit-bih-arrhythmia-database-1.0.0")
+DATA_PATH = Path("mitdb")
 
 class HybridModel(nn.Module):
     def __init__(self, config, num_classes):
