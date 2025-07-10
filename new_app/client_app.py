@@ -1,29 +1,47 @@
 import torch
 from flwr.client import ClientApp, NumPyClient
 from flwr.common import Context
-from new_app.task import HybridModel, get_weights, load_data, set_weights, test, train
-
+from new_app.task import (
+    HybridModel,
+    get_weights,
+    load_data,
+    set_weights,
+    test,
+    train,
+    cluster_model_weights,  # ✅ Import clustering
+)
 
 class FlowerClient(NumPyClient):
-    def __init__(self, net, trainloader, valloader, local_epochs):
+    def __init__(self, net, trainloader, valloader, local_epochs, partition_id):
         self.net = net
         self.trainloader = trainloader
         self.valloader = valloader
         self.local_epochs = local_epochs
+        self.partition_id = partition_id
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.net.to(self.device)
 
     def fit(self, parameters, config):
         set_weights(self.net, parameters)
+
         epoch_losses, epoch_accuracies = train(
             self.net,
             self.trainloader,
             self.local_epochs,
             self.device,
-            partition_id=config["partition-id"],  # 👈 pass to train for saving local metrics
+            partition_id=self.partition_id,
         )
+
+        # ✅ Use clustering if instructed
+        if config.get("use_compression", False):
+            print(f"🔑 Using weight clustering on client {self.partition_id}...")
+            clustered = cluster_model_weights(self.net, num_clusters=30)
+            returned_weights = clustered
+        else:
+            returned_weights = get_weights(self.net)
+
         return (
-            get_weights(self.net),
+            returned_weights,
             len(self.trainloader.dataset),
             {
                 "train_loss": epoch_losses[-1],
@@ -34,12 +52,14 @@ class FlowerClient(NumPyClient):
 
     def evaluate(self, parameters, config):
         set_weights(self.net, parameters)
+
         val_loss, val_acc, val_prec, val_rec, val_f1 = test(
             self.net,
             self.valloader,
             self.device,
-            partition_id=config["partition-id"],  # 👈 pass to test for saving local val metrics
+            partition_id=self.partition_id,
         )
+
         results = {
             "accuracy": val_acc,
         }
@@ -64,6 +84,4 @@ def client_fn(context: Context):
     return FlowerClient(net, trainloader, valloader, local_epochs, partition_id).to_client()
 
 
-app = ClientApp(
-    client_fn,
-)
+app = ClientApp(client_fn)

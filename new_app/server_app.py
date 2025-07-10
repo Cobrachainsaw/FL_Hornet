@@ -1,25 +1,25 @@
 """new-app: A Flower / PyTorch app."""
 
-from flwr.common import Context, ndarrays_to_parameters
+from flwr.common import Context, ndarrays_to_parameters, parameters_to_ndarrays
 from flwr.server import ServerApp, ServerAppComponents, ServerConfig
 from flwr.server.strategy import FedAvg
-from new_app.task import HybridModel, get_weights
+from new_app.task import HybridModel, get_weights, self_compress
 import torch
 from typing import List, Tuple, Dict, Any
 from pathlib import Path
 import json
 
+# ✅ When to start compression (e.g., after 20 rounds)
+COMPRESSION_START_ROUND = 20
 
-# 🔑 Aggregation with saving to disk
+
 def aggregate_fit_metrics(results: List[Tuple[int, Dict[str, Any]]]) -> Dict[str, float]:
     total_examples = sum(num_examples for num_examples, _ in results)
     weighted_loss = sum(num_examples * metrics["train_loss"] for num_examples, metrics in results)
     avg_train_loss = weighted_loss / total_examples
 
-    # ✅ Create folder
+    # ✅ Save each client's loss + accuracy curves
     Path("metrics").mkdir(exist_ok=True)
-
-    # ✅ Save each client's loss curve
     for i, (num_examples, metrics) in enumerate(results):
         curve = metrics.get("loss_curve")
         accuracy_curve = metrics.get("accuracy_curve")
@@ -48,11 +48,9 @@ def aggregate_evaluate_metrics(results: List[Tuple[int, Dict[str, Any]]]) -> Dic
 
 
 def server_fn(context: Context):
-    # Read config
     num_rounds = context.run_config["num-server-rounds"]
     fraction_fit = context.run_config["fraction-fit"]
 
-    # Initialize model parameters
     config = [3, 3, 0.0002, 0.3707, 7, 3, 3, 5, 1, 1, 8]
     model = HybridModel(config, 23)
     model.load_state_dict(
@@ -61,21 +59,56 @@ def server_fn(context: Context):
             weights_only=True,
         )
     )
+    model.to("cpu")  # Ensure on CPU for init
+
     ndarrays = get_weights(model)
     parameters = ndarrays_to_parameters(ndarrays)
 
-    # ✅ Add custom `on_fit_config_fn` to pass `partition-id` + `final_round`
     def on_fit_config_fn(server_round: int):
         return {
             "final_round": server_round == num_rounds,
+            "use_compression": server_round >= COMPRESSION_START_ROUND,
         }
 
     def on_evaluate_config_fn(server_round: int):
         return {
             "final_round": server_round == num_rounds,
+            "use_compression": False
         }
 
-    # ✅ Attach partition id using node config (each client has its id already)
+    def on_aggregate_fit_fn(server_round: int, weights_results, failures):
+        return weights_results, failures
+
+    def on_round_end_fn(server_round: int, parameters, _):
+        """Compress & distill the global model if it's time."""
+        if server_round >= COMPRESSION_START_ROUND:
+            # Load server weights into model
+            new_weights = parameters_to_ndarrays(parameters)
+            model = HybridModel(config, 23)
+            model.load_state_dict(
+                dict(zip(model.state_dict().keys(), [torch.tensor(v) for v in new_weights]))
+            )
+            model.to("cpu")
+
+            # ✅ Compress + distill
+            print(f"🔑 [Server] Compressing + distilling at round {server_round} ...")
+            compressed_model = self_compress(
+                model,
+                trainloader=None,  # 🔑 Or pass a small held-out loader if you want server-side KD
+                device="cpu",
+                do_distill=False,  # True if you have server-side KD data!
+                num_clusters=50,
+                epochs=1,
+            )
+
+            new_ndarrays = get_weights(compressed_model)
+            parameters = ndarrays_to_parameters(new_ndarrays)
+
+            # ✅ Optionally save compressed model
+            torch.save(compressed_model.state_dict(), f"models/compressed_round_{server_round}.pt")
+
+        return parameters
+
     strategy = FedAvg(
         fraction_fit=fraction_fit,
         fraction_evaluate=1.0,
@@ -85,12 +118,12 @@ def server_fn(context: Context):
         evaluate_metrics_aggregation_fn=aggregate_evaluate_metrics,
         on_fit_config_fn=on_fit_config_fn,
         on_evaluate_config_fn=on_evaluate_config_fn,
+        on_aggregate_fit_fn=on_aggregate_fit_fn,
+        on_round_end_fn=on_round_end_fn,  # ✅ NEW: do compress/distill after each round if needed
     )
 
     config = ServerConfig(num_rounds=num_rounds)
-
     return ServerAppComponents(strategy=strategy, config=config)
 
 
-# Create ServerApp
 app = ServerApp(server_fn=server_fn)

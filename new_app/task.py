@@ -17,6 +17,7 @@ from flwr_datasets import FederatedDataset
 from flwr_datasets.partitioner import IidPartitioner
 from torch.utils.data import DataLoader
 from torchvision.transforms import Compose, Normalize, ToTensor
+from sklearn.cluster import KMeans
 
 DATA_PATH = Path("mitdb")
 
@@ -231,6 +232,48 @@ def load_data(partition_id: int, num_partitions: int):
 
     return train_loader, test_loader
 
+def cluster_model_weights(model: nn.Module, num_clusters: int = 50) -> dict:
+    """Compress weights using k-means clustering."""
+    weights = []
+    shapes = []
+
+    # Flatten all parameters
+    for name, param in model.state_dict().items():
+        w = param.cpu().numpy().flatten()
+        weights.append(w)
+        shapes.append(param.shape)
+
+    flat_weights = np.concatenate(weights)
+    flat_weights = flat_weights.reshape(-1, 1)  # kmeans needs 2D
+
+    kmeans = KMeans(n_clusters=num_clusters, n_init=10, random_state=0)
+    assignments = kmeans.fit_predict(flat_weights)
+    centroids = kmeans.cluster_centers_.flatten()
+
+    return {
+        "centroids": centroids,
+        "assignments": assignments,
+        "shapes": shapes  # Needed to reshape later
+    }
+
+def decompress_model_weights(clustered: dict) -> list:
+    """Rebuild original flattened weights from clusters."""
+    centroids = clustered["centroids"]
+    assignments = clustered["assignments"]
+    shapes = clustered["shapes"]
+
+    flat_weights = centroids[assignments]
+
+    rebuilt = []
+    idx = 0
+    for shape in shapes:
+        size = np.prod(shape)
+        chunk = flat_weights[idx:idx+size].reshape(shape)
+        rebuilt.append(chunk)
+        idx += size
+
+    return rebuilt
+
 def train(net, trainloader, epochs, device, partition_id=None):
     net.to(device)
     criterion = torch.nn.CrossEntropyLoss()
@@ -355,3 +398,59 @@ def set_weights(net, parameters):
     params_dict = zip(net.state_dict().keys(), parameters)
     state_dict = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
     net.load_state_dict(state_dict, strict=True)
+
+class Distiller(nn.Module):
+    def __init__(self, student: nn.Module, teacher: nn.Module, temperature=8.0):
+        super(Distiller, self).__init__()
+        self.student = student
+        self.teacher = teacher
+        self.temperature = temperature
+
+    def forward(self, x):
+        return self.student(x)
+
+    def distill_loss(self, x):
+        student_logits = self.student(x)
+        with torch.no_grad():
+            teacher_logits = self.teacher(x)
+
+        T = self.temperature
+        student_probs = F.log_softmax(student_logits / T, dim=1)
+        teacher_probs = F.softmax(teacher_logits / T, dim=1)
+
+        loss = F.kl_div(student_probs, teacher_probs, reduction="batchmean") * (T * T)
+        return loss
+
+    def train_step(self, dataloader, optimizer, device):
+        self.train()
+        self.teacher.eval()
+
+        for inputs, _ in dataloader:
+            inputs = inputs.to(device)
+            optimizer.zero_grad()
+            loss = self.distill_loss(inputs)
+            loss.backward()
+            optimizer.step()
+
+# ✅ ✅ ✅ --------------------
+# Add self_compress
+def self_compress(model: nn.Module, trainloader=None, device="cpu", do_distill=True, num_clusters=50, epochs=1):
+    # 1️⃣ Cluster weights
+    clustered = cluster_model_weights(model, num_clusters=num_clusters)
+    new_weights = decompress_model_weights(clustered)
+
+    # Load compressed weights into student
+    student = HybridModel([3,3,0.0002,0.3707,7,3,3,5,1,1,8], 23)
+    set_weights(student, new_weights)
+
+    # 2️⃣ Optionally distill from original to student
+    if do_distill and trainloader is not None:
+        teacher = model
+        distiller = Distiller(student, teacher)
+        optimizer = torch.optim.Adam(student.parameters(), lr=0.001)
+        student.to(device)
+        teacher.to(device)
+        for _ in range(epochs):
+            distiller.train_step(trainloader, optimizer, device)
+
+    return student
