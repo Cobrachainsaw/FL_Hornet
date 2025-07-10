@@ -6,7 +6,8 @@ import numpy as np
 import wfdb
 from pathlib import Path
 from collections import Counter
-
+import json
+from sklearn.metrics import precision_score, recall_score, f1_score 
 import torch
 from torch.utils.data import Dataset, DataLoader, random_split, WeightedRandomSampler
 import torch
@@ -230,19 +231,27 @@ def load_data(partition_id: int, num_partitions: int):
 
     return train_loader, test_loader
 
-def train(net, trainloader, epochs, device):
-    """Train model with reshaping and validation."""
+def train(net, trainloader, epochs, device, partition_id=None):
     net.to(device)
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(net.parameters(), lr=0.001)
 
     net.train()
-    running_loss = 0.0
+    epoch_losses = []
+    epoch_accuracies = []
+    epoch_precisions = []
+    epoch_recalls = []
+    epoch_f1s = []
 
     for epoch in range(epochs):
         epoch_loss = 0.0
+        correct = 0
+        total = 0
+
+        all_labels = []
+        all_preds = []
+
         for inputs, labels in trainloader:
-            # Reshape to [B, 1, 200] if needed
             inputs = inputs.view(inputs.shape[0], 1, inputs.shape[-1])
             inputs, labels = inputs.to(device), labels.to(device)
 
@@ -254,24 +263,54 @@ def train(net, trainloader, epochs, device):
 
             epoch_loss += loss.item()
 
-        running_loss += epoch_loss / len(trainloader)
+            _, predicted = torch.max(outputs, 1)
+            correct += (predicted == labels).sum().item()
+            total += labels.size(0)
 
-    avg_train_loss = running_loss / epochs
-    return avg_train_loss
+            all_labels.extend(labels.cpu().numpy())
+            all_preds.extend(predicted.cpu().numpy())
 
+        avg_loss = epoch_loss / len(trainloader)
+        accuracy = correct / total
 
+        precision = precision_score(all_labels, all_preds, average="macro", zero_division=0)
+        recall = recall_score(all_labels, all_preds, average="macro", zero_division=0)
+        f1 = f1_score(all_labels, all_preds, average="macro", zero_division=0)
 
-def test(net, testloader, device):
-    """Evaluate model using your ECG dataset format."""
+        epoch_losses.append(avg_loss)
+        epoch_accuracies.append(accuracy)
+        epoch_precisions.append(precision)
+        epoch_recalls.append(recall)
+        epoch_f1s.append(f1)
+
+    # ✅ Save all metrics to local JSONL file
+    if partition_id is not None:
+        os.makedirs("metrics", exist_ok=True)
+        output_path = f"metrics/client_{partition_id}_curve.jsonl"
+        with open(output_path, "a") as f:
+            record = {
+                "loss_curve": epoch_losses,
+                "accuracy_curve": epoch_accuracies,
+                "precision_curve": epoch_precisions,
+                "recall_curve": epoch_recalls,
+                "f1_curve": epoch_f1s,
+            }
+            f.write(json.dumps(record) + "\n")
+
+    return epoch_losses, epoch_accuracies
+
+def test(net, testloader, device, partition_id=None):
     net.to(device)
     net.eval()
     criterion = torch.nn.CrossEntropyLoss()
     correct = 0
     total_loss = 0.0
 
+    all_labels = []
+    all_preds = []
+
     with torch.no_grad():
         for inputs, labels in testloader:
-            # Reshape to [B, 1, 200] if needed by model
             inputs = inputs.view(inputs.shape[0], 1, inputs.shape[-1])
             inputs, labels = inputs.to(device), labels.to(device)
 
@@ -282,11 +321,31 @@ def test(net, testloader, device):
             _, predicted = torch.max(outputs, 1)
             correct += (predicted == labels).sum().item()
 
+            all_labels.extend(labels.cpu().numpy())
+            all_preds.extend(predicted.cpu().numpy())
+
     avg_loss = total_loss / len(testloader)
     accuracy = correct / len(testloader.dataset)
-    return avg_loss, accuracy
 
+    precision = precision_score(all_labels, all_preds, average="macro", zero_division=0)
+    recall = recall_score(all_labels, all_preds, average="macro", zero_division=0)
+    f1 = f1_score(all_labels, all_preds, average="macro", zero_division=0)
 
+    # ✅ Store locally if partition_id given
+    if partition_id is not None:
+        os.makedirs("metrics", exist_ok=True)
+        output_path = f"metrics/client_{partition_id}_val_curve.jsonl"
+        with open(output_path, "a") as f:
+            record = {
+                "val_loss": avg_loss,
+                "val_accuracy": accuracy,
+                "val_precision": precision,
+                "val_recall": recall,
+                "val_f1": f1,
+            }
+            f.write(json.dumps(record) + "\n")
+
+    return avg_loss, accuracy, precision, recall, f1
 
 def get_weights(net):
     return [val.cpu().numpy() for _, val in net.state_dict().items()]
