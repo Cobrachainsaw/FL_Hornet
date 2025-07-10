@@ -12,6 +12,8 @@ from new_app.task import (
     cluster_model_weights,
     decompress_model_weights,  # ✅ Make sure you import this!
 )
+import numpy as np
+from flwr.common import parameters_to_ndarrays, ndarrays_to_parameters
 
 
 class FlowerClient(NumPyClient):
@@ -25,16 +27,13 @@ class FlowerClient(NumPyClient):
         self.net.to(self.device)
 
     def fit(self, parameters, config):
-        # ✅ Decompress if needed
-        if isinstance(parameters, bytes):
-            print(f"🔓 Decompressing (pickle) weights on client {self.partition_id}...")
-            clustered = pickle.loads(parameters)
-            parameters = decompress_model_weights(clustered)
-        elif isinstance(parameters, dict) and "centroids" in parameters:
+        params_ndarrays = parameters_to_ndarrays(parameters)
+        if len(params_ndarrays) == 1 and params_ndarrays[0].dtype == np.uint8:
             print(f"🔓 Decompressing clustered weights on client {self.partition_id}...")
-            parameters = decompress_model_weights(parameters)
+            clustered = pickle.loads(params_ndarrays[0].tobytes())
+            params_ndarrays = decompress_model_weights(clustered)
 
-        set_weights(self.net, parameters)
+        set_weights(self.net, params_ndarrays)
 
         epoch_losses, epoch_accuracies = train(
             self.net,
@@ -44,15 +43,11 @@ class FlowerClient(NumPyClient):
             partition_id=self.partition_id,
         )
 
-        if config.get("use_compression", False):
-            print(f"🔑 Using weight clustering on client {self.partition_id}...")
-            clustered = cluster_model_weights(self.net, num_clusters=30)
-            returned_weights = pickle.dumps(clustered)  # 👈 Can be pickled or not
-        else:
-            returned_weights = get_weights(self.net)
+        # ✅ Clients always return *dense* weights
+        returned_weights = get_weights(self.net)
 
         return (
-            returned_weights,
+            ndarrays_to_parameters(returned_weights),
             len(self.trainloader.dataset),
             {
                 "train_loss": epoch_losses[-1],
@@ -62,15 +57,13 @@ class FlowerClient(NumPyClient):
         )
 
     def evaluate(self, parameters, config):
-        if isinstance(parameters, bytes):
-            print(f"🔓 Decompressing (pickle) weights on client {self.partition_id}...")
-            clustered = pickle.loads(parameters)
-            parameters = decompress_model_weights(clustered)
-        elif isinstance(parameters, dict) and "centroids" in parameters:
+        params_ndarrays = parameters_to_ndarrays(parameters)
+        if len(params_ndarrays) == 1 and params_ndarrays[0].dtype == np.uint8:
             print(f"🔓 Decompressing clustered weights on client {self.partition_id}...")
-            parameters = decompress_model_weights(parameters)
+            clustered = pickle.loads(params_ndarrays[0].tobytes())
+            params_ndarrays = decompress_model_weights(clustered)
 
-        set_weights(self.net, parameters)
+        set_weights(self.net, params_ndarrays)
 
         val_loss, val_acc, val_prec, val_rec, val_f1 = test(
             self.net,

@@ -3,14 +3,22 @@
 from flwr.common import Context, ndarrays_to_parameters, parameters_to_ndarrays
 from flwr.server import ServerApp, ServerAppComponents, ServerConfig
 from flwr.server.strategy import FedAvg
-from new_app.task import HybridModel, get_weights, decompress_model_weights, cluster_model_weights
+
+from new_app.task import (
+    HybridModel,
+    get_weights,
+    decompress_model_weights,
+    cluster_model_weights,
+    self_compress,
+)
 import torch
-import pickle  # ✅ Required for serialization
+import pickle
+import numpy as np  # ✅ Required for packing clustered bytes
 from typing import List, Tuple, Dict, Any
 from pathlib import Path
 import json
 
-# ✅ When to start compression (e.g., after 20 rounds)
+# ✅ Compression starts after N rounds
 COMPRESSION_START_ROUND = 20
 
 
@@ -61,7 +69,6 @@ def server_fn(context: Context):
     )
     model.to("cpu")
 
-    # ✅ Start with dense tensors
     ndarrays = get_weights(model)
     parameters = ndarrays_to_parameters(ndarrays)
 
@@ -74,15 +81,16 @@ def server_fn(context: Context):
     def on_evaluate_config_fn(server_round: int):
         return {
             "final_round": server_round == num_rounds,
-            "use_compression": False
+            "use_compression": False,
         }
 
     def on_aggregate_fit_fn(server_round: int, weights_results, failures):
         new_results = []
         for fit_res in weights_results:
             params = parameters_to_ndarrays(fit_res.parameters)
-            if isinstance(params, bytes):
-                clustered = pickle.loads(params)
+            if isinstance(params, list) and len(params) == 1 and isinstance(params[0], np.ndarray):
+                # ✅ Received clustered: decompress
+                clustered = pickle.loads(params[0].tobytes())
                 nds = decompress_model_weights(clustered)
             else:
                 nds = params
@@ -91,26 +99,35 @@ def server_fn(context: Context):
         return new_results, failures
 
     def on_round_end_fn(server_round: int, parameters, _):
+        new_weights = parameters_to_ndarrays(parameters)
+        model = HybridModel(config, 23)
+        model.load_state_dict(
+            dict(zip(model.state_dict().keys(), [torch.tensor(v) for v in new_weights]))
+        )
+        model.to("cpu")
+
         if server_round >= COMPRESSION_START_ROUND:
-            new_weights = parameters_to_ndarrays(parameters)
-            model = HybridModel(config, 23)
-            model.load_state_dict(
-                dict(zip(model.state_dict().keys(), [torch.tensor(v) for v in new_weights]))
+            print(f"🔑 [Server] Clustering + Distillation at round {server_round} ...")
+
+            # ✅ Self-compress: cluster, decompress, distill
+            student = self_compress(
+                model,
+                trainloader=None,   # Optional: add server distillation data
+                device="cpu",
+                do_distill=True,
+                num_clusters=50,
+                epochs=1,
             )
-            model.to("cpu")
 
-            print(f"🔑 [Server] Clustering at round {server_round} ...")
-            clustered = cluster_model_weights(model, num_clusters=50)
+            clustered = cluster_model_weights(student, num_clusters=50)
 
-            # ✅ Serialize clusters instead of dense weights
-            parameters = pickle.dumps(clustered)
+            # ✅ Serialize and pack as ndarray
+            clustered_bytes = pickle.dumps(clustered)
+            clustered_ndarray = np.frombuffer(clustered_bytes, dtype=np.uint8)
 
-            # ✅ Optionally save clustered state for inspection
-            torch.save(model.state_dict(), f"models/compressed_round_{server_round}.pt")
+            parameters = ndarrays_to_parameters([clustered_ndarray])
 
-        else:
-            # If not compressing yet, keep dense tensors
-            pass
+            torch.save(student.state_dict(), f"models/compressed_round_{server_round}.pt")
 
         return parameters
 
