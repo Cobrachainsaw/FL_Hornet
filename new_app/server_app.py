@@ -3,8 +3,9 @@
 from flwr.common import Context, ndarrays_to_parameters, parameters_to_ndarrays
 from flwr.server import ServerApp, ServerAppComponents, ServerConfig
 from flwr.server.strategy import FedAvg
-from new_app.task import HybridModel, get_weights, self_compress
+from new_app.task import HybridModel, get_weights, decompress_model_weights, cluster_model_weights
 import torch
+import pickle  # ✅ Required for serialization
 from typing import List, Tuple, Dict, Any
 from pathlib import Path
 import json
@@ -18,9 +19,8 @@ def aggregate_fit_metrics(results: List[Tuple[int, Dict[str, Any]]]) -> Dict[str
     weighted_loss = sum(num_examples * metrics["train_loss"] for num_examples, metrics in results)
     avg_train_loss = weighted_loss / total_examples
 
-    # ✅ Save each client's loss + accuracy curves
     Path("metrics").mkdir(exist_ok=True)
-    for i, (num_examples, metrics) in enumerate(results):
+    for i, (_, metrics) in enumerate(results):
         curve = metrics.get("loss_curve")
         accuracy_curve = metrics.get("accuracy_curve")
         if curve:
@@ -59,8 +59,9 @@ def server_fn(context: Context):
             weights_only=True,
         )
     )
-    model.to("cpu")  # Ensure on CPU for init
+    model.to("cpu")
 
+    # ✅ Start with dense tensors
     ndarrays = get_weights(model)
     parameters = ndarrays_to_parameters(ndarrays)
 
@@ -77,12 +78,20 @@ def server_fn(context: Context):
         }
 
     def on_aggregate_fit_fn(server_round: int, weights_results, failures):
-        return weights_results, failures
+        new_results = []
+        for fit_res in weights_results:
+            params = parameters_to_ndarrays(fit_res.parameters)
+            if isinstance(params, bytes):
+                clustered = pickle.loads(params)
+                nds = decompress_model_weights(clustered)
+            else:
+                nds = params
+            fit_res.parameters = ndarrays_to_parameters(nds)
+            new_results.append(fit_res)
+        return new_results, failures
 
     def on_round_end_fn(server_round: int, parameters, _):
-        """Compress & distill the global model if it's time."""
         if server_round >= COMPRESSION_START_ROUND:
-            # Load server weights into model
             new_weights = parameters_to_ndarrays(parameters)
             model = HybridModel(config, 23)
             model.load_state_dict(
@@ -90,22 +99,18 @@ def server_fn(context: Context):
             )
             model.to("cpu")
 
-            # ✅ Compress + distill
-            print(f"🔑 [Server] Compressing + distilling at round {server_round} ...")
-            compressed_model = self_compress(
-                model,
-                trainloader=None,  # 🔑 Or pass a small held-out loader if you want server-side KD
-                device="cpu",
-                do_distill=False,  # True if you have server-side KD data!
-                num_clusters=50,
-                epochs=1,
-            )
+            print(f"🔑 [Server] Clustering at round {server_round} ...")
+            clustered = cluster_model_weights(model, num_clusters=50)
 
-            new_ndarrays = get_weights(compressed_model)
-            parameters = ndarrays_to_parameters(new_ndarrays)
+            # ✅ Serialize clusters instead of dense weights
+            parameters = pickle.dumps(clustered)
 
-            # ✅ Optionally save compressed model
-            torch.save(compressed_model.state_dict(), f"models/compressed_round_{server_round}.pt")
+            # ✅ Optionally save clustered state for inspection
+            torch.save(model.state_dict(), f"models/compressed_round_{server_round}.pt")
+
+        else:
+            # If not compressing yet, keep dense tensors
+            pass
 
         return parameters
 
@@ -119,7 +124,7 @@ def server_fn(context: Context):
         on_fit_config_fn=on_fit_config_fn,
         on_evaluate_config_fn=on_evaluate_config_fn,
         on_aggregate_fit_fn=on_aggregate_fit_fn,
-        on_round_end_fn=on_round_end_fn,  # ✅ NEW: do compress/distill after each round if needed
+        on_round_end_fn=on_round_end_fn,
     )
 
     config = ServerConfig(num_rounds=num_rounds)
