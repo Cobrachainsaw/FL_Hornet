@@ -395,6 +395,9 @@ def get_weights(net):
 
 
 def set_weights(net, parameters):
+    if isinstance(parameters, list) and len(parameters) == 1 and isinstance(parameters[0], list):
+        # Handle case where parameters is a single list of weights
+        parameters = parameters[0]
     params_dict = zip(net.state_dict().keys(), parameters)
     state_dict = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
     net.load_state_dict(state_dict, strict=True)

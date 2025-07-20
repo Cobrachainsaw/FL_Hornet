@@ -1,6 +1,6 @@
 """new-app: A Flower / PyTorch app."""
 
-from flwr.common import Context, ndarrays_to_parameters, parameters_to_ndarrays
+from flwr.common import Context, ndarrays_to_parameters, parameters_to_ndarrays, FitRes
 from flwr.server import ServerApp, ServerAppComponents, ServerConfig
 from flwr.server.strategy import FedAvg
 
@@ -21,7 +21,24 @@ import json
 # ✅ Compression starts after N rounds
 COMPRESSION_START_ROUND = 20
 
+class CustomFedAvg(FedAvg):
+    def __init__(self, on_aggregate_fit_fn=None, on_round_end_fn=None, **kwargs):
+        super().__init__(**kwargs)
+        self.on_aggregate_fit_fn = on_aggregate_fit_fn
+        self.on_round_end_fn = on_round_end_fn
+    
+    def aggregate_fit(self, server_round, results, failures):
+        if self.on_aggregate_fit_fn is not None:
+            results, failures = self.on_aggregate_fit_fn(server_round, results, failures)
+        return super().aggregate_fit(server_round, results, failures)
 
+    def __call__(self, server_round, client_manager):
+        fit_ins, evaluate_ins, parameters, history = super().__call__(server_round, client_manager)
+        if self.on_round_end_fn is not None:
+            new_parameters = self.on_round_end_fn(server_round, parameters, history)
+            return fit_ins, evaluate_ins, new_parameters, history
+        return fit_ins, evaluate_ins, parameters, history
+    
 def aggregate_fit_metrics(results: List[Tuple[int, Dict[str, Any]]]) -> Dict[str, float]:
     total_examples = sum(num_examples for num_examples, _ in results)
     weighted_loss = sum(num_examples * metrics["train_loss"] for num_examples, metrics in results)
@@ -94,8 +111,14 @@ def server_fn(context: Context):
                 nds = decompress_model_weights(clustered)
             else:
                 nds = params
-            fit_res.parameters = ndarrays_to_parameters(nds)
-            new_results.append(fit_res)
+                
+            new_fit_res = FitRes(
+                parameters=ndarrays_to_parameters(nds),
+                num_examples=fit_res.num_examples,
+                metrics=fit_res.metrics
+                )
+            
+            new_results.append(new_fit_res)
         return new_results, failures
 
     def on_round_end_fn(server_round: int, parameters, _):
@@ -129,9 +152,11 @@ def server_fn(context: Context):
 
             torch.save(student.state_dict(), f"models/compressed_round_{server_round}.pt")
 
-        return parameters
+            return parameters
+        
+        return ndarrays_to_parameters(new_weights)
 
-    strategy = FedAvg(
+    strategy = CustomFedAvg(
         fraction_fit=fraction_fit,
         fraction_evaluate=1.0,
         min_available_clients=2,

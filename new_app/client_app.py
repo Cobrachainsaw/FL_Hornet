@@ -27,6 +27,8 @@ class FlowerClient(NumPyClient):
         self.net.to(self.device)
 
     def fit(self, parameters, config):
+        print("CLIENT received parameters type:", type(parameters))
+
         params_ndarrays = parameters_to_ndarrays(parameters)
         if len(params_ndarrays) == 1 and params_ndarrays[0].dtype == np.uint8:
             print(f"🔓 Decompressing clustered weights on client {self.partition_id}...")
