@@ -1,5 +1,6 @@
 """new-app: A Flower / PyTorch app."""
 
+from xml.parsers.expat import model
 from flwr.common import ndarrays_to_parameters, parameters_to_ndarrays, FitRes
 from flwr.server import ServerApp, ServerAppComponents, ServerConfig
 from flwr.server.strategy import FedAvg
@@ -95,12 +96,12 @@ def server_fn(context: Context):
 
     config = [3, 3, 0.0002, 0.3707, 7, 3, 3, 5, 1, 1, 8]
     model = HybridModel(config, 23)
-    model.load_state_dict(
+    '''model.load_state_dict(
         torch.load(
             "models/model_30000_30000_00002_03707_70000_30000_30000_50000_10000_10000_80000.pt",
             weights_only=True,
         )
-    )
+    )'''
     model.to("cpu")
 
     ndarrays = get_weights(model)
@@ -120,27 +121,26 @@ def server_fn(context: Context):
 
     def on_aggregate_fit_fn(server_round: int, weights_results, failures):
         new_results = []
-    
+
         for idx, (params, num_examples, metrics) in enumerate(weights_results):
-            # Check if compression was used
-            if isinstance(params, list) and len(params) == 1 and isinstance(params[0], np.ndarray):
-                try:
-                    clustered = pickle.loads(params[0].tobytes())
+            try:
+                if (
+                    hasattr(params, "tensors") 
+                    and len(params.tensors) == 1 
+                    and params.tensors[0].dtype == np.uint8
+                ):
+                    print(f"[Server] 🔓 Decompressing weights from Client {idx}")
+                    clustered = pickle.loads(params.tensors[0].tobytes())
                     nds = decompress_model_weights(clustered)
-                except Exception as e:
-                    print(f"[⚠️ decompress_model_weights] Client {idx} failed: {e}")
-                    nds = params
-            else:
-                nds = params
-        
-            # Append decompressed weights
-            new_results.append((nds, num_examples, metrics))
+                    params = ndarrays_to_parameters(nds)
+                else:
+                    print(f"[Server] 🟡 Client {idx} sent uncompressed weights")
+            except Exception as e:
+                print(f"[⚠️ decompress_model_weights] Client {idx} failed: {e}")
+
+            new_results.append((params, num_examples, metrics))
 
         print(f"(on_aggregate_fit_fn) ✅ Processed {len(new_results)} results, {len(failures)} failures")
-
-        if new_results:
-            print(f"(on_aggregate_fit_fn) Example param type: {type(new_results[0][0][0])}")
-
         return new_results, failures
 
 

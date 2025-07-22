@@ -57,6 +57,10 @@ class FlowerClient(NumPyClient):
             print(f"[Client {self.partition_id}] 🔓 Decompressing clustered weights...")
             try:
                 clustered = pickle.loads(params_ndarrays[0].tobytes())
+                print(f"[Client {self.partition_id}] 📥 Clustered keys: {list(clustered.keys())}")
+                print(f"[Client {self.partition_id}] 📏 Assignments shape: {clustered['assignments'].shape}")
+                print(f"[Client {self.partition_id}] 📏 Centroids shape: {clustered['centroids'].shape}")
+                print(f"[Client {self.partition_id}] 📏 Shapes length: {len(clustered['shapes'])}")
                 params_ndarrays = decompress_model_weights(clustered)
             except Exception as e:
                 print(f"[Client {self.partition_id}] ❌ Decompression failed: {e}")
@@ -84,10 +88,11 @@ class FlowerClient(NumPyClient):
 
         # Step 1: Cluster/compress weights
         try:
-            clustered = cluster_model_weights(updated_weights)
+            print(f"[Client {self.partition_id}] 🧠 Starting compression...")
+            clustered = cluster_model_weights(self.net)
             compressed = pickle.dumps(clustered)
             compressed_ndarray = np.frombuffer(compressed, dtype=np.uint8)
-            print(f"[Client {self.partition_id}] 📦 Compressed weights: {compressed_ndarray.shape}")
+            print(f"[Client {self.partition_id}] 📦 Compressed weights buffer size: {compressed_ndarray.shape}")
         except Exception as e:
             print(f"[Client {self.partition_id}] ❌ Compression failed: {e}")
             raise
@@ -101,7 +106,8 @@ class FlowerClient(NumPyClient):
                 "loss_curve": epoch_losses,
                 "accuracy_curve": epoch_accuracies,
             },
-        )   
+        )
+   
 
     def evaluate(self, parameters, config):
         print(f"[Client {self.partition_id}] 🧪 evaluate() started")
@@ -112,18 +118,19 @@ class FlowerClient(NumPyClient):
         else:
             params_ndarrays = parameters_to_ndarrays(parameters)
 
-        # Decompress if necessary
+        # Decompress if compressed
         if len(params_ndarrays) == 1 and params_ndarrays[0].dtype == np.uint8:
             print(f"[Client {self.partition_id}] 🔓 Detected compressed weights, decompressing...")
             try:
                 clustered = pickle.loads(params_ndarrays[0].tobytes())
+                print(f"[Client {self.partition_id}] 📏 Centroids: {clustered['centroids'].shape}, Assignments: {clustered['assignments'].shape}, Shapes: {len(clustered['shapes'])}")
                 params_ndarrays = decompress_model_weights(clustered)
                 print(f"[Client {self.partition_id}] ✅ Decompression successful")
             except Exception as e:
                 print(f"[Client {self.partition_id}] ❌ Decompression failed: {e}")
                 raise
 
-        # Set weights
+        # Set model weights
         try:
             set_weights(self.net, params_ndarrays)
             print(f"[Client {self.partition_id}] 🧠 Model weights updated")
@@ -131,8 +138,8 @@ class FlowerClient(NumPyClient):
             print(f"[Client {self.partition_id}] ❌ Failed to set model weights: {e}")
             raise
 
-        # Perform evaluation
-        print(f"[Client {self.partition_id}] 🧪 Evaluating model...")
+        # Evaluate the model
+        print(f"[Client {self.partition_id}] 📊 Evaluating model on validation set...")
         try:
             val_loss, val_acc, val_prec, val_rec, val_f1 = test(
                 self.net,
@@ -144,7 +151,7 @@ class FlowerClient(NumPyClient):
             print(f"[Client {self.partition_id}] ❌ Evaluation failed: {e}")
             raise
 
-        # Format results
+        # Format metrics
         results = {"accuracy": val_acc}
         if config.get("final_round", False):
             results.update({
@@ -153,8 +160,9 @@ class FlowerClient(NumPyClient):
                 "f1": val_f1,
             })
 
-        print(f"[Client {self.partition_id}] ✅ Evaluation done: loss={val_loss:.4f}, accuracy={val_acc:.4f}")
+        print(f"[Client {self.partition_id}] ✅ Evaluation done: loss={val_loss:.4f}, acc={val_acc:.4f}, f1={val_f1:.4f}")
         return val_loss, len(self.valloader.dataset), results
+
 
 
 

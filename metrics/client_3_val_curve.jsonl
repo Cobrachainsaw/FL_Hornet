@@ -3,3 +3,5 @@
 {"val_loss": 5.769222698892865, "val_accuracy": 0.279319606087735, "val_precision": 0.05213903743315508, "val_recall": 0.018198256000466623, "val_f1": 0.02697970036967378}
 {"val_loss": 5.637314571653094, "val_accuracy": 0.2864816472694718, "val_precision": 0.047556057636294, "val_recall": 0.017242650065475224, "val_f1": 0.02490133707925313}
 {"val_loss": 5.573437993867056, "val_accuracy": 0.3034914950760967, "val_precision": 0.05315756941511986, "val_recall": 0.020305651672433676, "val_f1": 0.028919570712207018}
+{"val_loss": 3.0432357924325126, "val_accuracy": 0.0, "val_precision": 0.0, "val_recall": 0.0, "val_f1": 0.0}
+{"val_loss": 3.067677433150155, "val_accuracy": 0.0, "val_precision": 0.0, "val_recall": 0.0, "val_f1": 0.0}

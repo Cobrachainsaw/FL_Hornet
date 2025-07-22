@@ -234,27 +234,41 @@ def load_data(partition_id: int, num_partitions: int):
 
 def cluster_model_weights(model: nn.Module, num_clusters: int = 50) -> dict:
     """Compress weights using k-means clustering."""
+    
     weights = []
     shapes = []
 
-    # Flatten all parameters
+    print("🔍 [cluster_model_weights] Collecting and flattening weights...")
     for name, param in model.state_dict().items():
-        w = param.cpu().numpy().flatten()
-        weights.append(w)
+        w = param.detach().cpu().numpy()
+        if w.size == 0:
+            print(f"⚠️ Skipping empty param: {name}")
+            continue
+        flat = w.flatten()
+        weights.append(flat)
         shapes.append(param.shape)
+        print(f"  🔹 Layer: {name}, Shape: {param.shape}, Size: {flat.size}")
 
     flat_weights = np.concatenate(weights)
-    flat_weights = flat_weights.reshape(-1, 1)  # kmeans needs 2D
+    print(f"🧮 Total flattened weights: {flat_weights.size}")
 
+    flat_weights = flat_weights.reshape(-1, 1)  # kmeans requires 2D
+    if flat_weights.shape[0] < num_clusters:
+        raise ValueError(f"Number of weights ({flat_weights.shape[0]}) < num_clusters ({num_clusters})")
+
+    print("🚀 Running k-means clustering...")
     kmeans = KMeans(n_clusters=num_clusters, n_init=10, random_state=0)
     assignments = kmeans.fit_predict(flat_weights)
     centroids = kmeans.cluster_centers_.flatten()
 
+    print(f"✅ Clustering complete. Assignments: {assignments.shape}, Centroids: {centroids.shape}, Shapes saved: {len(shapes)}")
+
     return {
         "centroids": centroids,
         "assignments": assignments,
-        "shapes": shapes  # Needed to reshape later
+        "shapes": shapes,
     }
+
 
 def decompress_model_weights(clustered: dict) -> list:
     """Rebuild original flattened weights from clusters."""
@@ -262,17 +276,19 @@ def decompress_model_weights(clustered: dict) -> list:
     assignments = clustered["assignments"]
     shapes = clustered["shapes"]
 
-    flat_weights = centroids[assignments]
+    # Important to cast to float32 for PyTorch compatibility
+    flat_weights = centroids[assignments].astype(np.float32)
 
     rebuilt = []
     idx = 0
     for shape in shapes:
         size = np.prod(shape)
-        chunk = flat_weights[idx:idx+size].reshape(shape)
+        chunk = flat_weights[idx:idx + size].reshape(shape)
         rebuilt.append(chunk)
         idx += size
 
     return rebuilt
+
 
 def train(net, trainloader, epochs, device, partition_id=None):
     net.to(device)

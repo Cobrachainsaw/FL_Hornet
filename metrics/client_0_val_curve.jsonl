@@ -4,3 +4,8 @@
 {"val_loss": 5.139984362465995, "val_accuracy": 0.3303491495076097, "val_precision": 0.08176103488522724, "val_recall": 0.05341814400889054, "val_f1": 0.03591638607614837}
 {"val_loss": 5.382930789675031, "val_accuracy": 0.320053715308863, "val_precision": 0.10477133194282413, "val_recall": 0.02603046583998965, "val_f1": 0.03648776734122587}
 {"val_loss": 5.393848555428641, "val_accuracy": 0.3254252461951656, "val_precision": 0.07131077823385516, "val_recall": 0.043045499331804224, "val_f1": 0.03355691113654764}
+{"val_loss": 3.152824650491987, "val_accuracy": 0.10340196956132498, "val_precision": 0.00795399765856346, "val_recall": 0.07692307692307693, "val_f1": 0.014417225776252145}
+{"val_loss": 3.053079468863351, "val_accuracy": 0.0004476275738585497, "val_precision": 3.443289029681151e-05, "val_recall": 0.07692307692307693, "val_f1": 6.883496816382722e-05}
+{"val_loss": 3.1392021349498203, "val_accuracy": 0.0, "val_precision": 0.0, "val_recall": 0.0, "val_f1": 0.0}
+{"val_loss": 3.1761413982936313, "val_accuracy": 0.0, "val_precision": 0.0, "val_recall": 0.0, "val_f1": 0.0}
+{"val_loss": 3.100312808581761, "val_accuracy": 0.0, "val_precision": 0.0, "val_recall": 0.0, "val_f1": 0.0}
