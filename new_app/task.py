@@ -396,11 +396,21 @@ def get_weights(net):
 
 def set_weights(net, parameters):
     if isinstance(parameters, list) and len(parameters) == 1 and isinstance(parameters[0], list):
-        # Handle case where parameters is a single list of weights
         parameters = parameters[0]
-    params_dict = zip(net.state_dict().keys(), parameters)
+
+    # Flatten tuple if parameter is (array, shape)
+    clean_params = []
+    for p in parameters:
+        if isinstance(p, tuple):
+            p = p[0]
+        if not isinstance(p, np.ndarray):
+            raise TypeError(f"Expected np.ndarray, got {type(p)}")
+        clean_params.append(p)
+
+    params_dict = zip(net.state_dict().keys(), clean_params)
     state_dict = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
     net.load_state_dict(state_dict, strict=True)
+
 
 class Distiller(nn.Module):
     def __init__(self, student: nn.Module, teacher: nn.Module, temperature=8.0):
