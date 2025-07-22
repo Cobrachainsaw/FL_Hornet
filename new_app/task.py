@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader
 from torchvision.transforms import Compose, Normalize, ToTensor
 from sklearn.cluster import KMeans
 
-DATA_PATH = Path("mitdb")
+DATA_PATH = Path("physionet.org/files/mitdb/1.0.0")
 
 class HybridModel(nn.Module):
     def __init__(self, config, num_classes):
